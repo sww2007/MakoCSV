@@ -1,6 +1,10 @@
 "use client";
 
 import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import { jaJP } from "@mui/x-date-pickers/locales";
+import "dayjs/locale/ja";
 
 const theme = createTheme({
   palette: {
@@ -31,7 +35,13 @@ export default function Providers({ children }) {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      {children}
+      <LocalizationProvider
+        dateAdapter={AdapterDayjs}
+        adapterLocale="ja"
+        localeText={jaJP.components.MuiLocalizationProvider.defaultProps.localeText}
+      >
+        {children}
+      </LocalizationProvider>
     </ThemeProvider>
   );
 }

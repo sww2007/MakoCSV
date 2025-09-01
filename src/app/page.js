@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState, memo } from "react";
+import { useCallback, useMemo, useState, memo, useEffect, useRef } from "react";
 import Image from "next/image";
 import { db } from "@/lib/firebase";
 import {
@@ -10,6 +10,8 @@ import {
   orderBy,
   query,
   where,
+  doc,
+  getDoc,
 } from "firebase/firestore";
 import {
   AppBar,
@@ -35,6 +37,9 @@ import {
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
 import SearchIcon from "@mui/icons-material/Search";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import dayjs from "dayjs";
+import { verifyTOTP, parseTotpConfig } from "@/lib/totp";
 
 const FIELDS = [
   "accountNumber",
@@ -176,30 +181,19 @@ function toCsv(rows) {
 //
 
 const Controls = memo(function Controls({ onSearch, onDownloadCsv, docsLength, counts }) {
-  function formatDateTimeLocal(d) {
-    const pad = (n) => String(n).padStart(2, "0");
-    const y = d.getFullYear();
-    const m = pad(d.getMonth() + 1);
-    const day = pad(d.getDate());
-    const hh = pad(d.getHours());
-    const mm = pad(d.getMinutes());
-    const ss = pad(d.getSeconds());
-    return `${y}-${m}-${day}T${hh}:${mm}:${ss}`;
-  }
   const { start: defaultStart, end: defaultEnd } = (() => {
-    const now = new Date();
-    const y = new Date(now);
-    y.setDate(now.getDate() - 1);
-    const s = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 0, 0, 0);
-    const e = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 23, 59, 59);
-    return { start: formatDateTimeLocal(s), end: formatDateTimeLocal(e) };
+    const now = dayjs();
+    const y = now.subtract(1, "day");
+    const s = y.startOf("day");
+    const e = y.endOf("day");
+    return { start: s, end: e };
   })();
   const [start, setStart] = useState(defaultStart);
   const [end, setEnd] = useState(defaultEnd);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const canSearch = start && end;
+  const canSearch = Boolean(start && end && start.isValid?.() && end.isValid?.());
 
   const StatLabel = ({ left, right }) => (
     <Box sx={{ display: "flex", alignItems: "center" }}>
@@ -215,7 +209,9 @@ const Controls = memo(function Controls({ onSearch, onDownloadCsv, docsLength, c
     setError("");
     setLoading(true);
     try {
-      await onSearch(start, end);
+      const s = start?.startOf?.("day");
+      const e = end?.endOf?.("day");
+      await onSearch(s?.toDate?.(), e?.toDate?.());
     } catch (e) {
       setError(e?.message || "取得に失敗しました");
     } finally {
@@ -226,21 +222,19 @@ const Controls = memo(function Controls({ onSearch, onDownloadCsv, docsLength, c
   return (
     <>
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 2, maxWidth: 720 }}>
-        <TextField
+        <DatePicker
           label="開始"
-          type="datetime-local"
           value={start}
-          onChange={(e) => setStart(e.target.value)}
-          InputLabelProps={{ shrink: true }}
-          inputProps={{ step: 1 }}
+          onChange={(v) => setStart(v)}
+          views={["year", "month", "day"]}
+          slotProps={{ actionBar: { actions: ["today"] } }}
         />
-        <TextField
+        <DatePicker
           label="終了"
-          type="datetime-local"
           value={end}
-          onChange={(e) => setEnd(e.target.value)}
-          InputLabelProps={{ shrink: true }}
-          inputProps={{ step: 1 }}
+          onChange={(v) => setEnd(v)}
+          views={["year", "month", "day"]}
+          slotProps={{ actionBar: { actions: ["today"] } }}
         />
       </Box>
 
@@ -308,14 +302,13 @@ const TableView = memo(function TableView({ docs, rawDocs }) {
 
   return (
     <Table size="small" sx={{ width: "100%" }}>
-      <TableHead>
+      <TableHead sx={{ position: "sticky", top: 0, zIndex: 2 }}>
         <TableRow
           sx={{
             position: "sticky",
             top: 0,
             zIndex: 2,
-            backgroundImage:
-              "linear-gradient(90deg, rgba(0, 0, 45, 1), rgba(12, 70, 79, 1))",
+            backgroundColor: "rgba(0, 0, 45, 1)",
           }}
         >
           {DISPLAY_FIELDS.map((key) => (
@@ -327,7 +320,10 @@ const TableView = memo(function TableView({ docs, rawDocs }) {
                 py: 0.5,
                 px: 0.75,
                 color: "#fff",
-                backgroundColor: "transparent",
+                position: "relative",
+                zIndex: 2,
+                backgroundColor: "transparent !important",
+                backgroundImage: "none !important",
               }}
             >
               <TableSortLabel
@@ -367,7 +363,214 @@ const TableView = memo(function TableView({ docs, rawDocs }) {
   );
 });
 
+const AuthGate = memo(function AuthGate({ onAuthed }) {
+  const [secret, setSecret] = useState("");
+  const [code, setCode] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [ready, setReady] = useState(false);
+  const [cfg, setCfg] = useState({ digits: 6, period: 30, algorithm: "SHA-1" });
+  const [digitsArr, setDigitsArr] = useState(() => Array(6).fill(""));
+  const inputsRef = useRef([]);
+
+  // already authed in this session
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("makoCsvAuthed") === "1") {
+        onAuthed();
+      }
+    } catch {}
+  }, [onAuthed]);
+
+  // fetch secret from Firestore
+  useEffect(() => {
+    (async () => {
+      try {
+        const ref = doc(db, "csv", "main");
+        const snap = await getDoc(ref);
+        const s = snap.exists() ? snap.data()?.key : "";
+        if (!s) throw new Error("認証キーが見つかりません");
+        const parsed = parseTotpConfig(String(s));
+        setSecret(String(parsed.secret));
+        setCfg({ digits: parsed.digits, period: parsed.period, algorithm: parsed.algorithm });
+      } catch (e) {
+        setError(e?.message || "認証キーの取得に失敗しました");
+      } finally {
+        setReady(true);
+      }
+    })();
+  }, []);
+
+  // No test display; keep UI minimal
+
+  // Adjust digit boxes length when cfg changes
+  useEffect(() => {
+    const len = Number(cfg?.digits) || 6;
+    setDigitsArr(Array(len).fill(""));
+    setCode("");
+    inputsRef.current = [];
+  }, [cfg.digits]);
+
+  // Keep code string in sync
+  useEffect(() => {
+    setCode(digitsArr.join(""));
+  }, [digitsArr]);
+
+  const focusAt = (i) => {
+    const el = inputsRef.current?.[i];
+    if (el && typeof el.focus === "function") el.focus();
+  };
+
+  const handleDigitChange = (i, v) => {
+    const s = String(v || "").replace(/\D/g, "");
+    if (!s) {
+      setDigitsArr((arr) => arr.map((d, idx) => (idx === i ? "" : d)));
+      return;
+    }
+    const chars = s.split("");
+    setDigitsArr((arr) => {
+      const next = arr.slice();
+      let idx = i;
+      for (const ch of chars) {
+        if (idx >= next.length) break;
+        next[idx] = ch;
+        idx++;
+      }
+      // move focus to next empty or last filled
+      const nextIndex = Math.min(idx, next.length - 1);
+      setTimeout(() => focusAt(nextIndex), 0);
+      return next;
+    });
+  };
+
+  const handleKeyDown = (i, e) => {
+    if (e.key === "Backspace") {
+      if (!digitsArr[i]) {
+        // move back and clear
+        if (i > 0) {
+          setDigitsArr((arr) => arr.map((d, idx) => (idx === i - 1 ? "" : d)));
+          setTimeout(() => focusAt(i - 1), 0);
+        }
+      } else {
+        // clear current
+        setDigitsArr((arr) => arr.map((d, idx) => (idx === i ? "" : d)));
+      }
+    } else if (e.key === "ArrowLeft" && i > 0) {
+      e.preventDefault();
+      focusAt(i - 1);
+    } else if (e.key === "ArrowRight" && i < digitsArr.length - 1) {
+      e.preventDefault();
+      focusAt(i + 1);
+    }
+  };
+
+  const handlePaste = (i, e) => {
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    const s = String(text || "").replace(/\D/g, "");
+    if (!s) return;
+    e.preventDefault();
+    setDigitsArr((arr) => {
+      const next = arr.slice();
+      let idx = i;
+      for (const ch of s) {
+        if (idx >= next.length) break;
+        next[idx] = ch;
+        idx++;
+      }
+      setTimeout(() => focusAt(Math.min(idx, next.length - 1)), 0);
+      return next;
+    });
+  };
+
+  const handleVerify = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      if (!secret) throw new Error("認証キー未取得です");
+      if (!new RegExp(`^\\d{${cfg.digits}}$`).test(code)) throw new Error(`${cfg.digits}桁のコードを入力してください`);
+      const ok = await verifyTOTP(secret, code, { window: 1, ...cfg });
+      if (!ok) throw new Error("コードが正しくありません");
+      try { sessionStorage.setItem("makoCsvAuthed", "1"); } catch {}
+      onAuthed();
+    } catch (e) {
+      setError(e?.message || "認証に失敗しました");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", px: 2 }}>
+      <Container maxWidth="sm">
+        <Paper sx={{ p: 4 }}>
+          <Typography variant="h6" align="center" gutterBottom>
+            Google Authenticator 認証
+          </Typography>
+          {!ready ? (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2, justifyContent: "center" }}>
+              <CircularProgress size={20} />
+              <Typography variant="body2">認証キーを取得中...</Typography>
+            </Box>
+          ) : (
+            <>
+              <Box sx={{ mt: 2 }}>
+                <Box sx={{ display: "flex", gap: 1, justifyContent: "center" }}>
+                  {digitsArr.map((val, idx) => (
+                    <TextField
+                      key={idx}
+                      value={val}
+                      onChange={(e) => handleDigitChange(idx, e.target.value)}
+                      onKeyDown={(e) => handleKeyDown(idx, e)}
+                      onPaste={(e) => handlePaste(idx, e)}
+                      inputRef={(el) => (inputsRef.current[idx] = el)}
+                      inputProps={{
+                        inputMode: "numeric",
+                        pattern: "[0-9]*",
+                        maxLength: 1,
+                        style: { textAlign: "center", fontSize: "1.6rem", padding: "10px 0" },
+                      }}
+                      sx={{ width: 56 }}
+                    />
+                  ))}
+                </Box>
+              </Box>
+              <Box sx={{ mt: 3, display: "flex", justifyContent: "center" }}>
+                <Button
+                  variant="contained"
+                  onClick={handleVerify}
+                  disabled={loading}
+                  sx={{
+                    color: "#fff",
+                    minWidth: 240,
+                    justifyContent: "center",
+                    textAlign: "center",
+                    boxShadow: "none",
+                    background: "linear-gradient(45deg, rgba(65, 89, 208, 1) 0%, rgba(200, 79, 192, 1) 50%, rgba(255, 205, 112, 1) 100%)",
+                    '&:hover': {
+                      boxShadow: "none",
+                      opacity: 0.9,
+                      background: "linear-gradient(45deg, rgba(65, 89, 208, 1) 0%, rgba(200, 79, 192, 1) 50%, rgba(255, 205, 112, 1) 100%)",
+                    },
+                  }}
+                >
+                  {loading ? "認証中..." : "認証"}
+                </Button>
+              </Box>
+            </>
+          )}
+          {error && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {error}
+            </Alert>
+          )}
+        </Paper>
+      </Container>
+    </Box>
+  );
+});
+
 export default function Home() {
+  const [authed, setAuthed] = useState(false);
   const [docs, setDocs] = useState([]); // display strings
   const [rawDocs, setRawDocs] = useState([]); // raw values for sorting
 
@@ -416,17 +619,87 @@ export default function Home() {
     }
   }, []);
 
-  const downloadCsv = useCallback(() => {
+  const downloadCsv = useCallback(async () => {
     const csv = toCsv(docs);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `transfer_createdAt_${new Date()
-      .toISOString()
-      .slice(0, 19)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    // Build safe filename
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const fname = `transfer_createdAt_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.csv`;
+
+    // Prefer Tauri v2 plugins if available (native save dialog)
+    let handledByTauri = false;
+    if (typeof window !== "undefined") {
+      const isTauri = Boolean(window && window.__TAURI__);
+      try {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const path = await save({ defaultPath: fname, filters: [{ name: "CSV", extensions: ["csv"] }] });
+        // In Tauri: treat null as user-cancelled (stop). In Web: fall through to browser fallback.
+        if (path == null && isTauri) return;
+        try {
+          const { writeTextFile, writeFile } = await import("@tauri-apps/plugin-fs");
+          if (typeof writeTextFile === "function") {
+            await writeTextFile(path, csv);
+          } else if (typeof writeFile === "function") {
+            const encoder = new TextEncoder();
+            await writeFile({ path, contents: encoder.encode(csv) });
+          } else {
+            throw new Error("Tauri FS plugin not available");
+          }
+          handledByTauri = true;
+        } catch (e) {
+          console.warn("Tauri FS plugin not available, falling back to browser download", e);
+        }
+      } catch (e) {
+        // Tauri plugin not present; continue to browser fallback
+      }
+    }
+
+    if (handledByTauri) return;
+
+    // Browser Save File Picker (if supported)
+    try {
+      if (typeof window !== "undefined" && typeof window.showSaveFilePicker === "function") {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: fname,
+          types: [
+            {
+              description: "CSV",
+              accept: { "text/csv": [".csv"] },
+            },
+          ],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+        await writable.close();
+        return;
+      }
+    } catch (e) {
+      // If user cancels or API fails, fall back to anchor download
+      if (e && typeof e === "object" && e.name === "AbortError") return; // user cancelled
+      console.warn("Save File Picker unavailable/failed, falling back to anchor download", e);
+    }
+
+    // Browser fallback
+    try {
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fname;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        try {
+          a.remove();
+        } catch {}
+      }, 0);
+    } catch (e) {
+      console.error(e);
+      alert("CSVのダウンロードに失敗しました");
+    }
   }, [docs]);
 
   const counts = useMemo(() => {
@@ -444,6 +717,8 @@ export default function Home() {
     return { normal, error, kyash, gmo };
   }, [rawDocs]);
 
+  if (!authed) return <AuthGate onAuthed={() => setAuthed(true)} />;
+
   return (
     <Box sx={{ flexGrow: 1 }}>
       <AppBar
@@ -460,7 +735,7 @@ export default function Home() {
       >
         <Toolbar>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-            <Image src="/icon.png" alt="app icon" width={28} height={28} />
+            <Image src="icon.png" alt="app icon" width={28} height={28} />
             <Typography variant="h6" component="div">M-Log CSV Exporter</Typography>
           </Box>
         </Toolbar>

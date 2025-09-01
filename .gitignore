@@ -19,10 +19,17 @@
 
 # production
 /build
+/dist
+
+# rust (tauri)
+/target
+/src-tauri/target
+/src-tauri/gen
 
 # misc
 .DS_Store
 *.pem
+.vscode
 
 # debug
 npm-debug.log*

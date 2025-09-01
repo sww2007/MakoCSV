@@ -42,3 +42,12 @@ This app contains a simple Firestore-to-CSV export tool.
 
 CSV columns exported (in order):
 `accountNumber, bankCode, bankName, branchCode, branchName, createdAt, deviceName, email, errorInfo, finishedAt, flag, kyash, kyashTransferId, mailwiseId, purchaseAmount, purchasePercent, siteName, transferFee, transferPrice, transferPriceBeforeFee, userName, uuid`.
+
+### Desktop (Tauri)
+- Dev run (Next.js + Tauri):
+  - `npm run tauri:dev` (opens Tauri window; Next dev serves http://localhost:3000)
+- Build installers:
+  - `npm run tauri:build` (uses static export in `build/web`)
+- Config files:
+  - `src-tauri/tauri.conf.json`（devUrl/distDir/beforeBuildCommand設定済み）
+  - `src-tauri/src/main.rs`（最小のTauriエントリ）

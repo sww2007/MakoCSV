@@ -2,9 +2,13 @@
   "name": "mako-csv",
   "version": "0.1.0",
   "private": true,
+  
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "next dev -p 3000 --turbopack",
+    "tauri:dev": "tauri dev",
     "build": "next build --turbopack",
+    "build:web": "rm -rf build/web && next build && mkdir -p build && cp -R out build/web",
+    "tauri:build": "tauri build",
     "start": "next start",
     "lint": "eslint"
   },
@@ -13,6 +17,10 @@
     "@emotion/styled": "11.14.1",
     "@mui/icons-material": "7.3.1",
     "@mui/material": "7.3.1",
+    "@mui/x-date-pickers": "^7.0.0",
+    "dayjs": "^1.11.11",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
     "firebase": "10.12.5",
     "next": "15.5.0",
     "react": "19.1.0",
@@ -20,6 +28,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@tauri-apps/cli": "^2.0.0",
     "eslint": "^9",
     "eslint-config-next": "15.5.0"
   }

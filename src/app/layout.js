@@ -2,9 +2,9 @@ export const metadata = {
   title: "Firestore CSV Export",
   description: "Export Firestore documents to CSV",
   icons: {
-    icon: "/icon.png",
-    shortcut: "/icon.png",
-    apple: "/icon.png",
+    icon: "icon.png",
+    shortcut: "icon.png",
+    apple: "icon.png",
   },
 };
 

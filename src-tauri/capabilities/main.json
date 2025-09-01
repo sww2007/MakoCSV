@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "main",
+  "description": "Main window capabilities for dev and prod",
+  "platforms": ["macOS", "linux", "windows"],
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default"
+  ]
+}
