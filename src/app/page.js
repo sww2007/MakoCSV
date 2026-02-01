@@ -601,7 +601,8 @@ export default function Home() {
       );
 
       const snap = await getDocs(q);
-      const rows = snap.docs.map((d) => {
+      const filtered = snap.docs.filter((d) => d.data()?.flag !== "confirmedCode");
+      const rows = filtered.map((d) => {
         const data = d.data();
         const row = {};
         for (const key of FIELDS) {
@@ -609,7 +610,7 @@ export default function Home() {
         }
         return row;
       });
-      const rawRows = snap.docs.map((d) => {
+      const rawRows = filtered.map((d) => {
         const data = d.data();
         const row = {};
         for (const key of FIELDS) {
